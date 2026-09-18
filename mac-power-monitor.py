@@ -796,7 +796,8 @@ try:
         )
 
         print(f"  Voltage               : {fmt(voltage_v, ' V', 3)}")
-        print(f"  Gauge current         : {fmt(current_a, ' A', 3)}")        print(f"  Instant current       : {fmt(instant_a, ' A', 3)}")
+        print(f"  Gauge current         : {fmt(current_a, ' A', 3)}")
+        print(f"  Instant current       : {fmt(instant_a, ' A', 3)}")
 
         if bw is None:
             battery_power_text = "UNKNOWN"
