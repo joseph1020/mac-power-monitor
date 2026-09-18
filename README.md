@@ -1,55 +1,44 @@
 # mac-power-monitor
 
-Real-time macOS USB-C Power Delivery and battery incident monitor.
+A real-time macOS USB-C power and battery incident monitor for diagnosing unstable charging, Power Delivery renegotiation, and unexpected battery drain.
 
-`mac-power-monitor.py` combines macOS power-source telemetry with WhatBattery and WhatCable to help distinguish normal charge-start behavior from USB-C / USB-PD instability.
+The script combines `pmset`, `system_profiler`, WhatBattery, and WhatCable so macOS power-source state, negotiated USB-C PD capability, and battery-side power can be compared in one view.
 
-## What it monitors
+## Why this exists
 
-- macOS power source via `pmset`
-- battery-side power, current, voltage, temperature, health, and adapter contract via WhatBattery
-- negotiated USB-C PD contract and active port via WhatCable
-- adapter wattage via `system_profiler`
-- cross-checking of PD wattage sources
-- AC ↔ Battery source flapping
-- sustained battery discharge while external power is present
-- delayed charge-current startup after AC/PD attachment
+A Mac can recognise external power before positive battery charge current appears, and a charger can remain logically attached while the battery is still supplying power.
 
-## Charging states
+This monitor is designed to make those cases visible without treating every temporary charging delay as a fault.
 
-The monitor classifies the current condition as:
+It:
 
-- `ON_BATTERY` — Mac is drawing from battery
-- `CHARGING_ACTIVE` — battery-side charge power is positive
-- `CHARGING_PENDING` — external power/PD is present but positive battery charge power has not appeared yet
-- `AC_DISCHARGING` — external power is present while the battery is still supplying power
-- `CHARGE_HOLD` — battery appears intentionally held/not charging
-- `AC_CONNECTED` — external power is connected but active battery charging is not confirmed
-- `UNKNOWN` — state cannot be resolved from current telemetry
-
-A short delay between AC/PD attachment and positive battery-side charge power can be normal. During testing on a MacBookPro18,3, roughly 15–60 seconds was observed even though macOS recognized charging almost immediately.
-
-## Warnings
-
-- `PD SOURCES DISAGREE`
-- `AC POWER FLAPPING`
-- `BATTERY DRAINING ON AC`
-- `CHARGING PENDING TOO LONG`
-
-The default thresholds are deliberately conservative and can be adjusted near the top of the script.
+- tracks AC ↔ Battery source changes
+- compares PD wattage reported by WhatCable, WhatBattery, and macOS
+- distinguishes active charging, charge-start delay, charge hold, and battery discharge on AC
+- records sustained battery drain while external power is present
+- identifies the active USB-C port when WhatCable can resolve it
+- keeps timestamped CSV telemetry and a separate event log
+- avoids repeated warning spam by logging warning state changes rather than every refresh
 
 ## Requirements
 
-macOS with Python 3 plus:
+- macOS
+- Python 3
+- WhatBattery
+- WhatCable
+
+Install the external tools with Homebrew:
 
 ```bash
 brew install whatcable-cli
 brew install --cask darrylmorley/whatbattery/whatbattery
 ```
 
-The script can fall back to IORegistry battery telemetry if WhatBattery is unavailable, but WhatCable is needed for USB-C PD/port diagnostics.
+If WhatBattery is unavailable, the script falls back to `AppleSmartBattery` IORegistry data for basic battery telemetry. WhatCable is still required for USB-C PD and active-port diagnostics.
 
-## Run
+## Usage
+
+Run:
 
 ```bash
 python3 mac-power-monitor.py
@@ -57,32 +46,116 @@ python3 mac-power-monitor.py
 
 Stop with `Ctrl-C`.
 
-Logs are written to:
+The live view shows:
+
+- macOS AC / Battery source
+- `pmset` charging state
+- charging-phase classification
+- active USB-C port
+- WhatCable PD voltage, current, and wattage
+- WhatBattery adapter contract
+- macOS adapter wattage
+- battery voltage and current
+- battery-side net power
+- temperature, health, and cycle count
+- source transitions within the last 30 seconds
+- sustained battery-discharge duration while on AC
+
+## Charging states
+
+| State | Meaning |
+|---|---|
+| `ON_BATTERY` | Mac is drawing from the battery |
+| `CHARGING_ACTIVE` | Battery-side charge power is positive |
+| `CHARGING_PENDING` | External power / PD is present but positive battery charge power has not appeared yet |
+| `AC_DISCHARGING` | External power is present while the battery is still supplying power |
+| `CHARGE_HOLD` | Battery appears intentionally held or not charging |
+| `AC_CONNECTED` | External power is present but active battery charging is not confirmed |
+| `UNKNOWN` | Current telemetry is insufficient to classify the state |
+
+A short delay between AC/PD attachment and positive battery-side charge power can be normal. During testing on a `MacBookPro18,3`, roughly 15–60 seconds was observed even though macOS recognised charging almost immediately.
+
+## Warning logic
+
+The monitor can raise:
+
+- `PD SOURCES DISAGREE`
+- `AC POWER FLAPPING`
+- `BATTERY DRAINING ON AC`
+- `CHARGING PENDING TOO LONG`
+
+Default thresholds are defined near the top of the script.
+
+Warnings use stable internal keys, so a sustained condition is logged once when it starts and again when it clears rather than once per refresh cycle.
+
+## PD cross-check
+
+The script compares available adapter / PD wattage from:
+
+```text
+WhatCable
+WhatBattery
+system_profiler
+```
+
+A small tolerance is allowed between sources.
+
+These values describe negotiated adapter capability. They are **not** instantaneous Mac power consumption.
+
+WhatBattery `powerWatts` is treated as battery-side power and should not be added directly to negotiated adapter wattage to estimate total system load.
+
+## Logs
+
+Each run creates timestamped logs under:
 
 ```text
 ~/Library/Logs/mac-power-monitor/
 ```
 
-Each session produces:
+Files:
 
-- `power_YYYYMMDD_HHMMSS.csv`
-- `events_YYYYMMDD_HHMMSS.log`
+```text
+power_YYYYMMDD_HHMMSS.csv
+events_YYYYMMDD_HHMMSS.log
+```
+
+The CSV contains sampled telemetry for later comparison. The event log records meaningful source transitions, charging-phase changes, warnings, and warning clears.
 
 ## Physical port labels
 
-Physical left/right labels are only mapped when the model is explicitly known. For `MacBookPro18,3`, labels are shown in Korean when the macOS locale is Korean and in English otherwise. Canonical CSV port identifiers remain locale-independent, such as `Port-USB-C@1`.
+Physical left/right labels are only shown for Mac models with an explicitly verified mapping.
 
-## Important interpretation notes
+For `MacBookPro18,3`:
 
-- `system_profiler` wattage and the WhatCable PD contract are negotiated adapter capability, **not instantaneous Mac power consumption**.
-- WhatBattery `powerWatts` is treated as battery-side power, not total system input power.
-- `AC_DISCHARGING` does not automatically mean hardware failure. Possible causes include insufficient adapter capacity, high system load, PD instability, or line loss.
-- The monitor is diagnostic software, not a USB-PD protocol analyzer. Sub-second detach/reconnect events may be missed because macOS tools are polled synchronously.
+- Korean locale: `왼쪽 USB-C 1`, `왼쪽 USB-C 2`, `오른쪽 USB-C`
+- Other locales: `Left USB-C 1`, `Left USB-C 2`, `Right USB-C`
 
-## Background
+Canonical identifiers such as `Port-USB-C@1` remain locale-independent in the logs.
 
-This project grew out of troubleshooting a real intermittent USB-C charging incident in which macOS repeatedly switched between AC Power and Battery Power. Controlled testing showed stable operation with a known-good 1 m cable and repeatable flapping with a suspect 2 m cable across multiple USB-C ports. The monitor was built to make this class of failure visible in both live output and timestamped logs.
+## Validation
+
+The monitor was developed while investigating a real intermittent USB-C charging incident.
+
+Controlled testing reproduced the failure pattern with a suspect 2 m USB-C cable across multiple Mac USB-C ports, while a known-good 1 m cable remained stable on the same charger and PD ports.
+
+The monitor captured:
+
+- repeated AC ↔ Battery switching
+- PD contract loss and recovery
+- battery discharge during source dropouts
+- stable 60 W charging with a known-good cable
+- delayed transition from AC recognition to positive battery charge power
+
+## Limitations
+
+- This is a diagnostic monitor, not a USB-PD protocol analyser.
+- Telemetry is collected through macOS command-line tools and synchronous polling.
+- Very short sub-second disconnect/reconnect events can be missed.
+- WhatCable and macOS output formats may change in future versions.
+- Physical left/right USB-C mapping is intentionally limited to explicitly verified Mac models.
+- `AC_DISCHARGING` is not, by itself, proof of a hardware fault. High system load, insufficient adapter capacity, PD instability, or line loss can all produce battery discharge while on AC.
+- A warning identifies an observed condition, not a definitive root cause.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
